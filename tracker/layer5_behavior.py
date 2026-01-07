@@ -1,11 +1,15 @@
 class BehaviorDecider:
-    def __init__(self, motion_threshold=50, loitering_frames=10):
+    def __init__(self, motion_threshold=50, loitering_frames=10, warning_time=100, alert_time=200):
         """
-        motion_threshold: pixels for alert
-        loitering_frames: min frames of low motion for warning
+        motion_threshold: pixels for high motion alert
+        loitering_frames: min frames of low motion
+        warning_time: seconds before warning (not used in simple rules)
+        alert_time: seconds before alert (not used in simple rules)
         """
         self.motion_threshold = motion_threshold
         self.loitering_frames = loitering_frames
+        self.warning_time = warning_time
+        self.alert_time = alert_time
         self.track_motion_history = {}  # track_id -> list of motion gaps
 
     def update(self, tracks, motion_info):
@@ -22,19 +26,31 @@ class BehaviorDecider:
 
             max_gap = max(self.track_motion_history[track_id][-self.loitering_frames:])
 
-            # Rule-based decision
+            # ============ LAYER 8 — DECISION ENGINE (RULE-BASED) ============
+            # PRIMARY RULE: Mask or Helmet = ABNORMAL (Warning/Alert)
+            # Secondary rules: high motion, loitering
             decision = "Normal"
             reason = ""
 
-            if max_gap > self.motion_threshold:
+            # Priority 1: Mask/Helmet (ABNORMAL - most important)
+            if attributes.get("mask") or attributes.get("helmet"):
+                # If wearing mask/helmet AND moving erratically = ALERT
+                if max_gap > self.motion_threshold:
+                    decision = "Alert"
+                    reason = "ABNORMAL: Mask/Helmet + Erratic movement"
+                else:
+                    decision = "Warning"
+                    reason = "ABNORMAL: Mask/Helmet detected"
+            # Priority 2: Motion-based rules (only if no mask/helmet)
+            elif max_gap > self.motion_threshold:
                 decision = "Alert"
-                reason = "High motion detected (fleeing/falling/erratic)"
-            elif attributes.get("mask") or attributes.get("helmet") or max_gap > self.motion_threshold/3:
+                reason = "Erratic motion detected"
+            elif len(self.track_motion_history[track_id]) >= self.loitering_frames and max_gap < 10:
                 decision = "Warning"
-                reason = "Mask/helmet detected or loitering"
+                reason = "Loitering detected"
             else:
                 decision = "Normal"
-                reason = "Minimal movement"
+                reason = "Normal behavior"
 
             decisions.append({
                 "track_id": track_id,

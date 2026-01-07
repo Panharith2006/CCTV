@@ -1,0 +1,9 @@
+ultralytics
+torch
+opencv-python
+numpy
+matplotlib
+scikit-image
+scipy
+filterpy
+requests
