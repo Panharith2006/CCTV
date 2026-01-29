@@ -7,3 +7,5 @@ scikit-image
 scipy
 filterpy
 requests
+torchreid
+gdown

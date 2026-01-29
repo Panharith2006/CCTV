@@ -11,6 +11,7 @@ from tracker.layer4_motion_tracker import MotionAnalyzer
 from tracker.layer5_behavior import BehaviorDecider
 from tracker.layer6_telegram import TelegramNotifier
 from config.telegram_config import BOT_TOKEN, CHAT_ID
+from tracker.layer3_reid_manager import ReIDManager
 
 
 # ===================== TELEGRAM COOLDOWN =====================
@@ -106,6 +107,35 @@ def main():
     # Lightweight face detector for better mask association
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
+    # ReID manager: persistent person identification across leaves/returns
+    reid_manager = ReIDManager(db_path="cctv_reid.db", similarity_threshold=0.7)
+
+    # Alias mapping for nicer display labels
+    person_alias = {}
+    person_names = {}  # Cache for person names
+    
+    def alias_for(pid):
+        if pid is None:
+            return '?'
+        if pid not in person_alias:
+            person_alias[pid] = f"P{pid:03d}"
+        return person_alias[pid]
+    
+    def get_person_name(pid):
+        """Get person name from database with caching"""
+        if pid is None:
+            return None
+        if pid not in person_names:
+            try:
+                stats = reid_manager.db.get_person_stats(pid)
+                if stats and stats[3]:  # stats[3] is the name field
+                    person_names[pid] = stats[3]
+                else:
+                    person_names[pid] = None
+            except Exception:
+                person_names[pid] = None
+        return person_names[pid]
+
     print("[INFO] CCTV pipeline started")
 
     for data in ingestor.read():
@@ -139,6 +169,37 @@ def main():
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Magenta for helmets
             cv2.putText(frame, f"HELMET {helmet_det['confidence']:.2f}", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
 
+        # Merge overlapping person boxes (simple NMS) to avoid duplicate detections
+        def iou_box(a, b):
+            xA = max(a[0], b[0])
+            yA = max(a[1], b[1])
+            xB = min(a[2], b[2])
+            yB = min(a[3], b[3])
+            interW = max(0, xB - xA)
+            interH = max(0, yB - yA)
+            interArea = interW * interH
+            areaA = max(0, a[2]-a[0]) * max(0, a[3]-a[1])
+            areaB = max(0, b[2]-b[0]) * max(0, b[3]-b[1])
+            union = areaA + areaB - interArea
+            return interArea / union if union > 0 else 0.0
+
+        def nms_persons(dets, iou_thresh=0.5):
+            out = []
+            # sort by confidence desc
+            dets_sorted = sorted(dets, key=lambda x: x.get('confidence', 0.0), reverse=True)
+            for d in dets_sorted:
+                keep = True
+                for k in out:
+                    if iou_box(d['bbox'], k['bbox']) > iou_thresh:
+                        keep = False
+                        break
+                if keep:
+                    out.append(d)
+            return out
+
+        if len(persons) > 1:
+            persons = nms_persons(persons, iou_thresh=0.45)
+
         # face detection for mask association
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -146,6 +207,12 @@ def main():
 
         # Tracking
         tracks = tracker.update(persons, frame)
+
+        # Re-identification: attach persistent person_id to tracks
+        try:
+            tracks = reid_manager.update_tracking(tracks, frame, cam["camera_id"])
+        except Exception as e:
+            print(f"[ReID] update_tracking failed: {e}")
 
         # helpers
         def iou(boxA, boxB):
@@ -236,10 +303,21 @@ def main():
             elif decision == "Alert":
                 color = (0, 0, 255)
 
+            # Display stable person alias when available
+            person_id = t.get('person_id', None)
+            display_id = alias_for(person_id) if person_id is not None else f"T{track_id}"
+            
+            # Get person name if available
+            person_name = get_person_name(person_id) if person_id is not None else None
+            if person_name:
+                display_label = f"{person_name} ({display_id}) | {decision}"
+            else:
+                display_label = f"{display_id} | {decision}"
+
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 frame,
-                f"ID {track_id} | {decision}",
+                display_label,
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -262,6 +340,11 @@ def main():
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
+    # Clean up
+    try:
+        reid_manager.close()
+    except Exception:
+        pass
     ingestor.release()
     cv2.destroyAllWindows()
 
