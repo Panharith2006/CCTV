@@ -68,6 +68,11 @@ data/
 *.bak
 *~
 
+# Environment variables (secrets)
+.env
+config/telegram_config.py
+config/mysql_config.py
+
 # macOS
 .Spotlight-V100
 .Trashes

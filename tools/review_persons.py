@@ -1,8 +1,5 @@
-"""
-Person Database Management Tool
-Review, merge, label, and clean person entries
-Usage: python -m tools.review_persons
-"""
+
+# Person Database Management Tool
 import cv2
 import numpy as np
 from database.reid_database import ReIDDatabase
@@ -177,11 +174,9 @@ def view_thumbnails(db):
 
 def main():
     """Main review interface"""
-    db_path = input("\nEnter database path (default: cctv_reid.db): ").strip()
-    if not db_path:
-        db_path = "cctv_reid.db"
+    print("\\n[INFO] Using MySQL database from config/mysql_config.py")
     
-    db = ReIDDatabase(db_path)
+    db = ReIDDatabase()
     reid = ReIDExtractor()
     
     while True:

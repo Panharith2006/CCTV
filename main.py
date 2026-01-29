@@ -108,7 +108,7 @@ def main():
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
     # ReID manager: persistent person identification across leaves/returns
-    reid_manager = ReIDManager(db_path="cctv_reid.db", similarity_threshold=0.7)
+    reid_manager = ReIDManager(db_config=None, similarity_threshold=0.7)
 
     # Alias mapping for nicer display labels
     person_alias = {}

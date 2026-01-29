@@ -7,14 +7,8 @@ from detector.layer2_reid_extractor import ReIDExtractor
 
 
 class ReIDManager:
-    def __init__(self, db_path="reid_database.db", similarity_threshold=0.7, thumbnail_dir="thumbnails"):
-        """
-        Manages person re-identification across frames and cameras
-        
-        similarity_threshold: minimum similarity to consider same person (0-1)
-        thumbnail_dir: directory to save person thumbnails
-        """
-        self.db = ReIDDatabase(db_path)
+    def __init__(self, db_config=None, similarity_threshold=0.7, thumbnail_dir="thumbnails"):
+        self.db = ReIDDatabase(db_config)
         self.reid_extractor = ReIDExtractor()
         self.similarity_threshold = similarity_threshold
         self.thumbnail_dir = thumbnail_dir
@@ -72,12 +66,24 @@ class ReIDManager:
             return person_id
 
         # Compute centroid (mean) for each person and find best match
+        # Also try min-distance approach: compare to ALL stored vectors and take minimum
         best_match_id = None
         best_similarity = 0.0
         all_similarities = {}  # For detailed logging
+        
         for pid, feats in persons.items():
+            # Try two strategies:
+            # 1. Centroid-based (average of all features)
             centroid = np.mean(feats, axis=0)
-            similarity = self.reid_extractor.compare_features(features, centroid)
+            sim_centroid = self.reid_extractor.compare_features(features, centroid)
+            
+            # 2. Min-distance (compare to each stored vector, take max similarity)
+            # This helps when person has different appearances (masked/helmeted variants)
+            sim_max = max([self.reid_extractor.compare_features(features, f) for f in feats])
+            
+            # Use the better of the two strategies
+            similarity = max(sim_centroid, sim_max)
+            
             all_similarities[pid] = similarity
             if similarity > best_similarity:
                 best_similarity = similarity
@@ -129,17 +135,6 @@ class ReIDManager:
         return None
     
     def update_tracking(self, tracks, frame, camera_id):
-        """
-        Update all tracks with ReID person IDs
-        
-        Args:
-            tracks: list of track dicts from SORT
-            frame: current frame
-            camera_id: camera identifier
-        
-        Returns:
-            tracks with added 'person_id' field
-        """
         for track in tracks:
             bbox = track['bbox']
             track_id = track['track_id']

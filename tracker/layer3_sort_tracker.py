@@ -10,12 +10,6 @@ class SortTracker:
         )
 
     def update(self, detections, frame=None):
-        """
-        detections: list of dicts with bbox + confidence
-        frame: optional frame object (kept for API compatibility)
-
-        Returns tracked objects with IDs
-        """
         if len(detections) == 0:
             dets = np.empty((0, 5))
         else:

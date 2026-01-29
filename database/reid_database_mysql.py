@@ -7,21 +7,12 @@ from datetime import datetime
 
 class ReIDDatabase:
     def __init__(self, config=None):
-        """
-        Initialize MySQL connection for ReID database
-        
-        Args:
-            config: dict with keys: host, port, user, password, database
-                   If None, tries to import from config/mysql_config.py
-        """
         if config is None:
             try:
                 from config.mysql_config import MYSQL_CONFIG
                 config = MYSQL_CONFIG
             except ImportError:
                 raise ValueError(
-                    "MySQL config not found. Create config/mysql_config.py from "
-                    "config/mysql_config.py.example and fill in your credentials."
                 )
         
         self.config = config
@@ -33,24 +24,6 @@ class ReIDDatabase:
     def connect(self):
         """Establish MySQL connection"""
         try:
-            # First, connect without database to check if it exists
-            conn_temp = mysql.connector.connect(
-                host=self.config['host'],
-                port=self.config.get('port', 3306),
-                user=self.config['user'],
-                password=self.config['password'],
-                charset=self.config.get('charset', 'utf8mb4'),
-                auth_plugin=self.config.get('auth_plugin', 'mysql_native_password')
-            )
-            cursor_temp = conn_temp.cursor()
-            
-            # Create database if it doesn't exist
-            db_name = self.config['database']
-            cursor_temp.execute(f"CREATE DATABASE IF NOT EXISTS {db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-            cursor_temp.close()
-            conn_temp.close()
-            
-            # Now connect with the database
             self.conn = mysql.connector.connect(
                 host=self.config['host'],
                 port=self.config.get('port', 3306),
@@ -58,10 +31,8 @@ class ReIDDatabase:
                 password=self.config['password'],
                 database=self.config['database'],
                 charset=self.config.get('charset', 'utf8mb4'),
-                autocommit=self.config.get('autocommit', False),
-                auth_plugin=self.config.get('auth_plugin', 'mysql_native_password')
+                autocommit=self.config.get('autocommit', False)
             )
-            print(f"[Database] Connected to MySQL database: {db_name}")
         except Error as e:
             raise ConnectionError(f"[Database] MySQL connection failed: {e}")
     
@@ -265,7 +236,7 @@ class ReIDDatabase:
         print(f"[Database] Merged person {source_id} into {target_id}")
     
     def delete_person(self, person_id):
-        """Delete a person (soft delete)"""
+        # Delete a person (soft delete)
         cursor = self.conn.cursor()
         cursor.execute("""
             UPDATE persons SET status = 'deleted' WHERE person_id = %s
@@ -274,7 +245,6 @@ class ReIDDatabase:
         print(f"[Database] Deleted person {person_id}")
     
     def close(self):
-        """Close MySQL connection"""
         if self.conn and self.conn.is_connected():
             self.conn.close()
             print("[Database] MySQL connection closed")

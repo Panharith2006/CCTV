@@ -1,9 +1,0 @@
-"""
-Example Telegram config. Copy to config/telegram_config.py and fill in your values.
-"""
-
-# Replace with your bot token and chat id
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-CHAT_ID = "YOUR_CHAT_ID_HERE"
-
-# If you don't want to send Telegram alerts during testing, set BOT_TOKEN/CHAT_ID to empty strings.

@@ -9,3 +9,5 @@ filterpy
 requests
 torchreid
 gdown
+mysql-connector-python
+python-dotenv

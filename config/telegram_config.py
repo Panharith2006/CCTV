@@ -1,12 +1,19 @@
 """
-Telegram configuration used by the pipeline.
-Create or edit this file to set your bot token and chat id.
-
-To disable Telegram alerts for testing, leave `BOT_TOKEN` and `CHAT_ID` as empty strings.
+Telegram Bot Configuration
+Reads from environment variables (via .env file) or falls back to hardcoded values
+For production: set environment variables and remove hardcoded secrets
 """
+import os
+from pathlib import Path
 
-# Your Telegram bot token (from @BotFather)
-BOT_TOKEN = ""
+# Try to load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / '.env'
+    load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not installed, use os.environ only
 
-# Your Telegram chat id (numeric or @username)
-CHAT_ID = ""
+# Read from environment variables with fallback to empty strings
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
