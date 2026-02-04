@@ -16,6 +16,7 @@ from tracker.layer3_reid_manager import ReIDManager
 
 # ===================== TELEGRAM COOLDOWN =====================
 last_telegram_sent = {}  # (track_id, decision) -> timestamp
+unknown_person_alerted = {}  # track_id -> timestamp (to track unknown person alerts)
 
 
 def can_send(track_id, decision, cooldown):
@@ -213,6 +214,31 @@ def main():
             tracks = reid_manager.update_tracking(tracks, frame, cam["camera_id"])
         except Exception as e:
             print(f"[ReID] update_tracking failed: {e}")
+
+        # Check for persons without names and send alerts
+        if telegram is not None:
+            for t in tracks:
+                track_id = t["track_id"]
+                person_id = t.get('person_id', None)
+                
+                # If person is registered but has no name assigned
+                if person_id is not None:
+                    person_name = get_person_name(person_id)
+                    
+                    # Alert if person has no name and we haven't alerted recently
+                    if not person_name:
+                        now = time.time()
+                        if track_id not in unknown_person_alerted or (now - unknown_person_alerted[track_id]) >= 300:
+                            unknown_person_alerted[track_id] = now
+                            x1, y1, x2, y2 = t["bbox"]
+                            telegram.send_alert(
+                                frame, 
+                                track_id, 
+                                cam["camera_id"], 
+                                "Unnamed Person",
+                                f"Person ID {person_id} detected without name - please review and add name"
+                            )
+                            print(f"[TELEGRAM] Unnamed person alert sent for Person ID {person_id}, track {track_id}")
 
         # helpers
         def iou(boxA, boxB):

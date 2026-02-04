@@ -80,7 +80,7 @@ class ReIDManager:
             # 2. Min-distance (compare to each stored vector, take max similarity)
             # This helps when person has different appearances (masked/helmeted variants)
             sim_max = max([self.reid_extractor.compare_features(features, f) for f in feats])
-            
+               
             # Use the better of the two strategies
             similarity = max(sim_centroid, sim_max)
             

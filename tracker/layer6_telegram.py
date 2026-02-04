@@ -13,6 +13,7 @@ class TelegramNotifier:
         if self.save_snapshots and not os.path.exists(self.tmp_dir):
             os.makedirs(self.tmp_dir)
 
+
     def send_alert(self, frame, track_id, cam_id, decision, reason):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.tmp_dir}/cam{cam_id}_track{track_id}_{timestamp}.jpg"

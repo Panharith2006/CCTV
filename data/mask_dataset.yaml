@@ -1,18 +1,18 @@
-## Base dataset directory (relative to repo root). Change to absolute path if your
-## dataset is stored elsewhere, e.g. `D:/mydata/mask_dataset`.
+# Dataset configuration for mask and helmet detection
+# Update the 'path' if your dataset is stored elsewhere
 
-# Use an absolute path so Ultralytics doesn't prepend its download directory.
-# Update this if your repository is in a different location.
-path: D:/AHBD/CCTV_AI/dataset/mask_dataset
+# Absolute path to dataset directory
+path: D:/AHBD/CCTV_AI/data/mask_dataset
 
-# `train` and `val` are paths relative to the `path` value above
-train: images/train
-val: images/val
+# Paths to train/val/test sets (relative to 'path')
+train: train/images
+val: val/images
+test: test/images
 
+# Number of classes
+nc: 2
+
+# Class names (0-indexed)
 names:
-  0: person
-  1: mask
-  2: helmet
-
-
-
+  0: mask
+  1: helmet

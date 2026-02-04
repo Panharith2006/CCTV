@@ -2,8 +2,6 @@ from ultralytics import YOLO
 import os
 
 candidates = [
-    'runs/detect/mask_finetune4/weights/best.pt',
-    'runs/detect/mask_finetune3/weights/best.pt',
     'runs/detect/mask_finetune/weights/best.pt',
 ]
 model_path = 'yolov8n.pt'
