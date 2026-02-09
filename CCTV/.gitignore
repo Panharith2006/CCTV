@@ -1,0 +1,90 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+cctv_reid.db
+test_reid.db
+
+# Thumbnails and saved media
+thumbnails/
+snapshots/
+
+# YOLO / training outputs
+runs/
+weights/
+best.pt
+yolov8n.pt
+
+# Dataset folders (optional large data)
+mask_dataset/
+data/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+*.exe
+python-installer.exe
+
+# Environment variables (secrets)
+.env
+.env.example
+
+# Custom folders
+env/
+new/
+reid/
+New folder/
+
+# SQLite databases
+*.db
+reid_features.db
+
+# macOS
+.Spotlight-V100
+.Trashes

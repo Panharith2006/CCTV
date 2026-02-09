@@ -1,0 +1,46 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments - DO NOT COMMIT
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+
+# Large model files
+*.pt
+yolov8n.pt
+best.pt
+
+# Database files
+*.db
+*.sqlite
+reid_features.db
+
+# Executables
+*.exe
+python-installer.exe
+
+# Temporary folders
+new/
+reid/
+New folder/
+New folder (2)/
+snapshots/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Thumbnails
+thumbnails/
