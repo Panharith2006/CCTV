@@ -37,12 +37,12 @@ class TelegramNotifier:
         else:
             filename = frame  # use frame directly if using memory buffer (advanced)
 
-        # Build enhanced caption
+        # Build enhanced caption (Windows-compatible, no emoji to avoid encoding issues)
         caption_lines = [
-            f"\ud83d\udea8 {decision.upper()} ALERT",
+            f"[{decision.upper()} ALERT]",
             "",
-            f"\ud83d\udcf9 Camera: {cam_id}",
-            f"\ud83c\udfaf Track ID: {track_id}",
+            f"Camera: {cam_id}",
+            f"Track ID: {track_id}",
         ]
         
         # Add person ID and status
@@ -50,23 +50,23 @@ class TelegramNotifier:
             if isinstance(person_id, int):
                 # Database person (violation)
                 if is_reidentified:
-                    caption_lines.append(f"\ud83d\udd04 Person ID: {person_id} (RE-IDENTIFIED)")
-                    caption_lines.append(f"\u26a0\ufe0f  Known violator returned!")
+                    caption_lines.append(f"Person ID: {person_id} [RE-IDENTIFIED]")
+                    caption_lines.append(f"WARNING: Known violator returned!")
                 else:
-                    caption_lines.append(f"\ud83c\udd95 Person ID: {person_id} (NEW SUSPECT)")
-                    caption_lines.append(f"\u26a0\ufe0f  First time violation")
+                    caption_lines.append(f"Person ID: {person_id} [NEW SUSPECT]")
+                    caption_lines.append(f"First time violation detected")
             else:
                 # Memory person (shouldn't trigger alerts, but just in case)
-                caption_lines.append(f"\ud83d\udc64 Temp ID: {person_id} (Not in database)")
+                caption_lines.append(f"Temp ID: {person_id} (Not in database)")
         
         # Add violation type if available
         if violation_type:
-            caption_lines.append(f"\ud83d\udea8 Violation: {violation_type}")
+            caption_lines.append(f"Violation Type: {violation_type}")
         
         caption_lines.extend([
             "",
-            f"\ud83d\udcdd Reason: {reason}",
-            f"\u23f0 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Reason: {reason}",
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         ])
         
         caption = "\n".join(caption_lines)

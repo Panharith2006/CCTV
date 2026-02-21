@@ -3,7 +3,7 @@ import cv2
 import sys
 import os
 import time
-from detector.layer2_reid_extractor import ReIDExtractor
+from detector.layer2_reid_extractor_enhanced import EnhancedReIDExtractor
 from database.reid_database import ReIDDatabase
 from ultralytics import YOLO
 
@@ -21,7 +21,7 @@ def enroll_from_webcam(db_config=None, name=None, captures=5, auto_interval=0.5,
     # Initialize YOLO detector and ReID
     print("[INFO] Loading YOLO person detector...")
     yolo = YOLO("yolov8n.pt")
-    reid = ReIDExtractor()
+    reid = EnhancedReIDExtractor()
     db = ReIDDatabase(db_config)
     cap = cv2.VideoCapture(0)
 
@@ -192,7 +192,7 @@ def enroll_from_image(image_path, db_config=None, name=None, is_masked=False, is
         return False
     
     # Initialize
-    reid = ReIDExtractor()
+    reid = EnhancedReIDExtractor()
     db = ReIDDatabase(db_config)
 
     # Try to detect person using YOLO so we crop like main pipeline
@@ -333,7 +333,7 @@ def add_features_to_person(person_id, is_masked=False, is_helmeted=False, captur
     
     # Initialize
     yolo = YOLO("yolov8n.pt")
-    reid = ReIDExtractor()
+    reid = EnhancedReIDExtractor()
     db = ReIDDatabase()
     cap = cv2.VideoCapture(0)
 
@@ -441,3 +441,4 @@ def add_features_to_person(person_id, is_masked=False, is_helmeted=False, captur
 
 if __name__ == "__main__":
     main()
+

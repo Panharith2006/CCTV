@@ -72,21 +72,32 @@ class ReIDDatabase:
         # Person table with location and violation tracking
         # REDESIGNED: Single violation_status and violation_reason fields
         # Only persons with violations are saved (violation-only storage)
+        #
+        # FIELD MAPPING TO USER REQUIREMENTS:
+        # - person_id          → person_id (int)
+        # - first_seen         → first_seen_time (datetime)
+        # - last_seen          → last_seen_time (datetime)
+        # - violation_status   → status (enum: 'WARNING'/'ALERT')
+        # - violation_reason   → violation_type ('MASK'/'HELMET'/'COMBINATION')
+        # - last_camera_id     → camera_id (VARCHAR for flexibility: '1' or 'camera_front')
+        # - thumbnail_path     → latest_snapshot_path (string)
+        # Additional fields: appearance_count, status (tracking lifecycle), name (manual label),
+        #                    is_reidentified (re-entry flag), detection_date (same-day filtering)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS persons (
-                person_id INT AUTO_INCREMENT PRIMARY KEY,
-                first_seen DATETIME,
-                last_seen DATETIME,
-                appearance_count INT DEFAULT 1,
-                status VARCHAR(20) DEFAULT 'active',
-                name VARCHAR(255) DEFAULT NULL,
-                thumbnail_path VARCHAR(512) DEFAULT NULL,
-                last_camera_id VARCHAR(100) DEFAULT NULL,
-                last_location VARCHAR(255) DEFAULT NULL,
-                violation_status VARCHAR(20) DEFAULT NULL,
-                violation_reason VARCHAR(255) DEFAULT NULL,
-                is_reidentified TINYINT(1) DEFAULT 0,
-                detection_date DATE,
+                person_id INT AUTO_INCREMENT PRIMARY KEY,          -- ✅ person_id (int)
+                first_seen DATETIME,                               -- ✅ first_seen_time (datetime)
+                last_seen DATETIME,                                -- ✅ last_seen_time (datetime)
+                appearance_count INT DEFAULT 1,                    -- Additional: re-detection count
+                status VARCHAR(20) DEFAULT 'active',               -- Additional: tracking lifecycle ('active'/'exited')
+                name VARCHAR(255) DEFAULT NULL,                    -- Additional: manual label (for tools)
+                thumbnail_path VARCHAR(512) DEFAULT NULL,          -- ✅ latest_snapshot_path (string)
+                last_camera_id VARCHAR(100) DEFAULT NULL,          -- ✅ camera_id (VARCHAR not INT for flexibility)
+                last_location VARCHAR(255) DEFAULT NULL,           -- Additional: human-readable location
+                violation_status VARCHAR(20) DEFAULT NULL,         -- ✅ status (enum: 'WARNING'/'ALERT')
+                violation_reason VARCHAR(255) DEFAULT NULL,        -- ✅ violation_type ('MASK'/'HELMET')
+                is_reidentified TINYINT(1) DEFAULT 0,              -- Additional: re-entry flag
+                detection_date DATE,                               -- Additional: same-day filtering
                 INDEX idx_status (status),
                 INDEX idx_violation (violation_status),
                 INDEX idx_detection_date (detection_date)
@@ -94,61 +105,47 @@ class ReIDDatabase:
         """)
         
         # Feature vectors table
+        # ONE feature per person (updated on re-identification)
+        # FIELD MAPPING:
+        # - feature_vector → 128D feature vector (stored as JSON array)
+        # - camera_id      → camera_id (last camera where feature was extracted)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS features (
-                feature_id INT AUTO_INCREMENT PRIMARY KEY,
-                person_id INT,
-                feature_vector TEXT,
-                timestamp DATETIME,
-                camera_id VARCHAR(100),
-                is_masked TINYINT(1) DEFAULT 0,
-                is_helmeted TINYINT(1) DEFAULT 0,
+                feature_id INT AUTO_INCREMENT PRIMARY KEY,         -- Unique feature ID
+                person_id INT,                                     -- Foreign key to persons
+                feature_vector TEXT,                               -- ✅ 128D feature vector (JSON)
+                timestamp DATETIME,                                -- Last update time
+                camera_id VARCHAR(100),                            -- ✅ camera_id (last capture location)
+                is_masked TINYINT(1) DEFAULT 0,                    -- Context: masked state
+                is_helmeted TINYINT(1) DEFAULT 0,                  -- Context: helmeted state
                 FOREIGN KEY (person_id) REFERENCES persons(person_id) ON DELETE CASCADE,
                 INDEX idx_person_id (person_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """)
-        
-        # Detections table (audit trail)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS detections (
-                detection_id INT AUTO_INCREMENT PRIMARY KEY,
-                person_id INT,
-                camera_id VARCHAR(100),
-                bbox TEXT,
-                timestamp DATETIME,
-                track_id INT,
-                FOREIGN KEY (person_id) REFERENCES persons(person_id) ON DELETE CASCADE,
-                INDEX idx_person_timestamp (person_id, timestamp)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         
         # Location history table (track movement across cameras)
+        # FIELD MAPPING:
+        # - camera_id → location_history (list[int]) - Sequential camera transitions
+        # This table stores the full path of person movement: camera1 → camera2 → camera3
+        # Event-based storage: only inserts when camera changes (not per-frame)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS location_history (
-                history_id INT AUTO_INCREMENT PRIMARY KEY,
-                person_id INT,
-                camera_id VARCHAR(100),
-                location VARCHAR(255),
-                timestamp DATETIME,
-                is_masked TINYINT(1) DEFAULT 0,
-                is_helmeted TINYINT(1) DEFAULT 0,
-                event_type VARCHAR(50) DEFAULT 'movement',
+                history_id INT AUTO_INCREMENT PRIMARY KEY,         -- Unique entry ID
+                person_id INT,                                     -- Foreign key to persons
+                camera_id VARCHAR(100),                            -- ✅ camera_id (part of location_history list)
+                location VARCHAR(255),                             -- Human-readable location
+                timestamp DATETIME,                                -- Event time
+                is_masked TINYINT(1) DEFAULT 0,                    -- Mask state at this event (tracks changes)
+                is_helmeted TINYINT(1) DEFAULT 0,                  -- Helmet state at this event
+                event_type VARCHAR(50) DEFAULT 'movement',         -- 'first_detection', 'movement', 'exit'
                 FOREIGN KEY (person_id) REFERENCES persons(person_id) ON DELETE CASCADE,
                 INDEX idx_person_timestamp (person_id, timestamp)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         
-        # Suspect images table (store images for suspects only)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS suspect_images (
-                image_id INT AUTO_INCREMENT PRIMARY KEY,
-                person_id INT,
-                image_path VARCHAR(1024),
-                timestamp DATETIME,
-                FOREIGN KEY (person_id) REFERENCES persons(person_id) ON DELETE CASCADE,
-                INDEX idx_person_id (person_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """)
+        # Note: suspect_images and detections tables have been removed (redundant)
+        # - suspect_images: Use thumbnail_path in persons table instead
+        # - detections: Not needed for violation-only storage (creates millions of rows)
         
         self.conn.commit()
         print("[Database] MySQL tables created/verified")
@@ -165,7 +162,7 @@ class ReIDDatabase:
             camera_id: Camera identifier
             location: Camera location
             thumbnail_path: Path to saved image
-            name: Person name (if enrolled)
+            name: Deprecated (not used in violation-only system)
             violation_status: 'WARNING' or 'ALERT'
             violation_reason: 'MASK', 'HELMET', 'ERRATIC_MOTION', 'LOITERING', 'COMBINATION'
             is_masked: Current mask status (for feature context)
@@ -175,15 +172,15 @@ class ReIDDatabase:
         now = datetime.now()
         today = now.date()
         
-        # Insert person with location and violation status
+        # Insert person with location and violation status (name column removed)
         cursor.execute("""
             INSERT INTO persons (
-                first_seen, last_seen, thumbnail_path, name, 
+                first_seen, last_seen, thumbnail_path,
                 last_camera_id, last_location,
                 violation_status, violation_reason, detection_date, is_reidentified
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
-        """, (now, now, thumbnail_path, name, camera_id, location, 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0)
+        """, (now, now, thumbnail_path, camera_id, location, 
                violation_status, violation_reason, today))
         person_id = cursor.lastrowid
         
@@ -206,15 +203,16 @@ class ReIDDatabase:
     
     def get_all_features(self, same_day_only=True):
         """
-        Get all person features for matching
+        Get all person features for matching (ONE feature per person)
         
-        CHANGED: Now supports same-day filtering for faster, more accurate matching
+        CHANGED: Single feature per person + same-day filtering for faster matching
         
         Args:
             same_day_only: If True, only return features from today's violations
         
         Returns:
             List of dicts with person_id, features, violation_status, violation_reason
+            Note: Returns ONE feature per person (latest updated feature)
         """
         cursor = self.conn.cursor()
         
@@ -252,7 +250,10 @@ class ReIDDatabase:
     
     def update_person(self, person_id, feature_vector, camera_id, is_masked=False, is_helmeted=False, mark_reidentified=True):
         """
-        Update person's last seen and add new feature
+        Update person's last seen and REPLACE existing feature (single feature per person)
+        
+        CHANGED: Now UPDATES the existing feature instead of adding new ones.
+        Strategy: One feature per person for simplicity and efficiency.
         
         Args:
             mark_reidentified: If True, marks person as re-identified (not new suspect)
@@ -274,47 +275,18 @@ class ReIDDatabase:
                 WHERE person_id = %s
             """, (now, person_id))
         
-        # Add new feature
+        # UPDATE existing feature (replace with latest)
         feature_json = json.dumps(feature_vector.tolist())
         cursor.execute("""
-            INSERT INTO features (person_id, feature_vector, timestamp, camera_id, is_masked, is_helmeted)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (person_id, feature_json, now, camera_id, int(is_masked), int(is_helmeted)))
+            UPDATE features
+            SET feature_vector = %s, timestamp = %s, camera_id = %s, is_masked = %s, is_helmeted = %s
+            WHERE person_id = %s
+        """, (feature_json, now, camera_id, int(is_masked), int(is_helmeted), person_id))
         
         self.conn.commit()
     
-    def add_detection(self, person_id, camera_id, bbox, track_id):
-        """Log a detection"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO detections (person_id, camera_id, bbox, timestamp, track_id)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (person_id, camera_id, json.dumps(bbox), datetime.now(), track_id))
-        self.conn.commit()
-
-    def get_last_detection(self, person_id, camera_id):
-        """Return last detection row for a person on a camera.
-
-        Returns dict with keys: 'bbox' (list) and 'timestamp' (datetime)
-        or None if no prior detection.
-        """
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT bbox, timestamp
-            FROM detections
-            WHERE person_id = %s AND camera_id = %s
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (person_id, camera_id))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        bbox_json, ts = row[0], row[1]
-        try:
-            bbox = json.loads(bbox_json)
-        except Exception:
-            bbox = bbox_json
-        return {'bbox': bbox, 'timestamp': ts}
+    # Note: add_detection and get_last_detection removed
+    # detections table was creating millions of rows and not used for violation tracking
     
     def get_person_stats(self, person_id):
         """Get statistics for a person"""
@@ -425,27 +397,9 @@ class ReIDDatabase:
         
         self.conn.commit()
     
-    def save_suspect_image(self, person_id, image_path, timestamp=None):
-        """
-        Save image for violation person (called during violation creation)
-        
-        Args:
-            person_id: Person identifier
-            image_path: Path to saved image
-            timestamp: When image was captured
-        """
-        cursor = self.conn.cursor()
-        
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        cursor.execute("""
-            INSERT INTO suspect_images (person_id, image_path, timestamp)
-            VALUES (%s, %s, %s)
-        """, (person_id, image_path, timestamp))
-        
-        self.conn.commit()
-        print(f"[Database] Violation image saved for Person {person_id}: {image_path}")
+    # Note: save_suspect_image removed
+    # suspect_images table was redundant with thumbnail_path in persons table
+    # Use thumbnail_path parameter in add_person() instead
     
     def mark_person_exit(self, person_id, camera_id, location):
         """
@@ -458,9 +412,25 @@ class ReIDDatabase:
             person_id: Person identifier (DB ID, not memory ID)
             camera_id: Camera where exit detected
             location: Location name
+        
+        Note: Prevents duplicate exit events by checking current status
         """
         cursor = self.conn.cursor()
         now = datetime.now()
+        
+        # Check current status to prevent duplicate exit events
+        cursor.execute("""
+            SELECT status FROM persons WHERE person_id = %s
+        """, (person_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            return  # Person doesn't exist
+        
+        current_status = result[0]
+        if current_status == 'exited':
+            # Already marked as exited, don't create duplicate exit event
+            return
         
         # Update person status
         cursor.execute("""
@@ -469,7 +439,7 @@ class ReIDDatabase:
             WHERE person_id = %s
         """, (now, person_id))
         
-        # Add exit event to location history
+        # Add exit event to location history (only if not already exited)
         cursor.execute("""
             INSERT INTO location_history (person_id, camera_id, location, timestamp, event_type)
             VALUES (%s, %s, %s, %s, 'exit')
@@ -510,33 +480,26 @@ class ReIDDatabase:
         
         return results
     
-    def get_suspect_images(self, person_id):
+    def get_suspect_thumbnail(self, person_id):
         """
-        Get all suspect images for a person
+        Get thumbnail image for a person
         
         Args:
             person_id: Person identifier
         
         Returns:
-            List of image records
+            Thumbnail path or None
         """
         cursor = self.conn.cursor()
         
         cursor.execute("""
-            SELECT image_path, timestamp
-            FROM suspect_images
+            SELECT thumbnail_path
+            FROM persons
             WHERE person_id = %s
-            ORDER BY timestamp DESC
         """, (person_id,))
         
-        results = []
-        for row in cursor.fetchall():
-            results.append({
-                'image_path': row[0],
-                'timestamp': row[1]
-            })
-        
-        return results
+        row = cursor.fetchone()
+        return row[0] if row else None
     
     def get_summary(self):
         """
@@ -570,9 +533,9 @@ class ReIDDatabase:
         cursor.execute("SELECT COUNT(*) FROM persons WHERE is_reidentified = 1")
         reidentified = cursor.fetchone()[0]
         
-        # Total suspect images
-        cursor.execute("SELECT COUNT(*) FROM suspect_images")
-        total_suspect_images = cursor.fetchone()[0]
+        # Persons with thumbnails
+        cursor.execute("SELECT COUNT(*) FROM persons WHERE thumbnail_path IS NOT NULL")
+        persons_with_thumbnails = cursor.fetchone()[0]
         
         # Today's violations
         today = datetime.now().date()
@@ -586,7 +549,7 @@ class ReIDDatabase:
             'warnings': warnings,
             'alerts': alerts,
             'reidentified': reidentified,
-            'total_suspect_images': total_suspect_images,
+            'persons_with_thumbnails': persons_with_thumbnails,
             'today_violations': today_violations
         }
     

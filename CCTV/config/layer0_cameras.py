@@ -9,8 +9,8 @@ CAMERAS = [
     #},
     {
         "camera_id": "CAM_02",
-        "location": "Laptop Webcam",
-        "source": 0
+        "location": "iVCam Phone Camera",
+        "source": 1  # iVCam phone camera (index 1)
     }
     #{
     #    "camera_id": "CAM_03",

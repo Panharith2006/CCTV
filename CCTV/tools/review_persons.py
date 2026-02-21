@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 from database.reid_database import ReIDDatabase
-from detector.layer2_reid_extractor import ReIDExtractor
+from detector.layer2_reid_extractor_enhanced import EnhancedReIDExtractor
 
 
 def display_thumbnail(img_path, person_info):
@@ -177,7 +177,7 @@ def main():
     print("\\n[INFO] Using MySQL database from config/mysql_config.py")
     
     db = ReIDDatabase()
-    reid = ReIDExtractor()
+    reid = EnhancedReIDExtractor()
     
     while True:
         print("\n" + "="*60)
@@ -229,3 +229,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

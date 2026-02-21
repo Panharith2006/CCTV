@@ -1,4 +1,10 @@
 import json
+import sys
+import os
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from database.reid_database import ReIDDatabase
 
 print('[INFO] Using MySQL database from config/mysql_config.py')

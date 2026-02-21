@@ -5,14 +5,15 @@ import sys
 from collections import defaultdict, deque
 
 from config.layer0_cameras import CAMERAS
+from config.mysql_config import MYSQL_CONFIG
 from ingest.layer1_frame_ingest import FrameIngestor
-from detector.two_stage_detector import TwoStageDetector
+from detector.single_stage_detector import SingleStageDetector
 from tracker.layer3_sort_tracker import SortTracker
 from tracker.layer4_motion_tracker import MotionAnalyzer
 from tracker.layer5_behavior import BehaviorDecider
 from tracker.layer6_telegram import TelegramNotifier
 from config.telegram_config import BOT_TOKEN, CHAT_ID
-from tracker.layer3_reid_manager import ReIDManager
+from tracker.violation_only_reid import ViolationOnlyReIDManager
 
 
 # ===================== CONFIG FLAGS =====================
@@ -24,7 +25,7 @@ from tracker.layer3_reid_manager import ReIDManager
 #   DEBUG_LEVEL = 2  → Events (show violations, re-identifications, alerts)
 #   DEBUG_LEVEL = 3  → Debug (show all detections, attributes, motion - VERY VERBOSE)
 #
-DEBUG_LEVEL = 1  # <-- CHANGE THIS VALUE
+DEBUG_LEVEL = 2  # <-- CHANGED TO 2 TO SEE REID MATCHING DETAILS
 OUTPUT_EVERY_N_FRAMES = 30  # Print summary every N frames (at ~1fps = 30 seconds)
 
 # ===================== TELEGRAM COOLDOWN =====================
@@ -68,38 +69,21 @@ def main():
         sample_rate=3
     )
 
-    # Auto-load the LATEST trained weights
-    model_path = "yolov8n.pt"
+    # Load trained model (person, mask, helmet)
+    model_path = "best.pt"
     
-    # First, check for best.pt in the root directory
-    if os.path.exists("best.pt"):
-        model_path = "best.pt"
-        print(f"[INFO] Loading trained model: {model_path}")
-    else:
-        # Find the most recent training run
-        detect_dir = os.path.join("runs", "detect")
-        if os.path.exists(detect_dir):
-            # Get all mask_finetune* directories sorted by modification time
-            runs = [d for d in os.listdir(detect_dir) if d.startswith("mask_finetune")]
-            if runs:
-                # Sort by name (mask_finetune4 > mask_finetune3, etc.)
-                runs.sort(reverse=True)
-                for run in runs:
-                    candidate = os.path.join(detect_dir, run, "weights", "best.pt")
-                    if os.path.exists(candidate):
-                        model_path = candidate
-                        print(f"[INFO] Loading trained model: {model_path}")
-                        break
+    if not os.path.exists("best.pt"):
+        print(f"[ERROR] Trained model 'best.pt' not found!")
+        print(f"[ERROR] Please ensure best.pt (with person, mask, helmet classes) is in the project root")
+        print(f"[ERROR] Or train a model using your training script")
+        sys.exit(1)
     
-    if model_path == "yolov8n.pt":
-        print(f"[WARNING] No trained model found, using default: {model_path}")
-        print(f"[WARNING] Default model doesn't detect masks! Run: python train_mask.py")
+    print(f"[INFO] Loading trained model: {model_path}")
 
-    # Tunable thresholds
-    # Align person filter with detector's person confidence (was filtering out detections)
-    CONF_THRESHOLD_PERSON = 0.5
-    CONF_THRESHOLD_MASK = 0.65  # Increased to reduce false positives (glasses detected as masks)
-    CONF_THRESHOLD_HELMET = 0.65  # Increased to reduce false positives
+    # Tunable thresholds (OPTIMIZED for violation detection accuracy)
+    CONF_THRESHOLD_PERSON = 0.40    # LOWERED: Detect more people (safer for security)
+    CONF_THRESHOLD_MASK = 0.50      # Balanced: Mask = WARNING level
+    CONF_THRESHOLD_HELMET = 0.65    # HIGHER: Filter false helmet detections (model accuracy issues)
     HEAD_FRAC = 0.45
     IOU_THRESHOLD = 0.1
     ATTRIBUTE_SMOOTHING = 5
@@ -109,8 +93,14 @@ def main():
     LOITERING_WARNING_FRAMES = 360  # 6 minutes @ 1fps
     LOITERING_ALERT_FRAMES = 720  # 12 minutes @ 1fps
 
-    # Two-stage detector: person detector (COCO) + attribute detector (fine-tuned)
-    detector = TwoStageDetector(person_model_path="yolov8n.pt", attr_model_path=model_path, conf_person=0.5, conf_attr=0.5)
+    # Single-stage detector: Detect person, then mask/helmet on head crops
+    detector = SingleStageDetector(
+        model_path=model_path,
+        conf_person=CONF_THRESHOLD_PERSON, 
+        conf_mask=CONF_THRESHOLD_MASK,
+        conf_helmet=CONF_THRESHOLD_HELMET,
+        head_fraction=HEAD_FRAC
+    )
     tracker = SortTracker()
     motion = MotionAnalyzer(frame_gaps=[1, 5, 10, 15, 20])
 
@@ -134,44 +124,23 @@ def main():
     # Lightweight face detector for better mask association
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    # ReID manager: persistent person identification across leaves/returns
-    # Pass camera location for cross-camera tracking
+    # Violation-only ReID: Only tracks persons WITH mask/helmet violations
+    # Normal persons → track_id only (no person_id, not saved)
+    # Violators → person_id assigned, saved to database, re-identified on return
     camera_location = f"{cam['camera_id']} - {cam.get('location', 'Unknown Location')}"
-    # Lower threshold from 0.7 to 0.55 to prevent false matches between different people
-    reid_manager = ReIDManager(db_config=None, similarity_threshold=0.55, camera_location=camera_location, debug_level=DEBUG_LEVEL)
-
-    # Alias mapping for nicer display labels
-    person_alias = {}
-    person_names = {}  # Cache for person names
-    
-    def alias_for(pid):
-        if pid is None:
-            return '?'
-        if pid not in person_alias:
-            # Handle string IDs (like "M1", "M2") and integer IDs (1, 2, 3)
-            if isinstance(pid, str):
-                person_alias[pid] = pid  # Memory IDs already formatted as "M1"
-            else:
-                person_alias[pid] = f"P{pid:03d}"  # Database IDs as "P001", "P002"
-        return person_alias[pid]
-    
-    def get_person_name(pid):
-        """Get person name from database with caching"""
-        if pid is None:
-            return None
-        if pid not in person_names:
-            try:
-                stats = reid_manager.db.get_person_stats(pid)
-                if stats and stats[3]:  # stats[3] is the name field
-                    person_names[pid] = stats[3]
-                else:
-                    person_names[pid] = None
-            except Exception:
-                person_names[pid] = None
-        return person_names[pid]
+    reid_manager = ViolationOnlyReIDManager(
+        db_config=MYSQL_CONFIG,
+        similarity_threshold=0.55,
+        thumbnail_dir="thumbnails",
+        camera_id=cam['camera_id'],
+        camera_location=camera_location,
+        debug_level=DEBUG_LEVEL
+    )
 
     print("[INFO] CCTV pipeline started")
     print(f"[INFO] Debug level: {DEBUG_LEVEL} (0=Silent, 1=Summary, 2=Events, 3=Verbose)")
+    print(f"[INFO] Detection strategy: Person → Head crop → Mask/Helmet")
+    print(f"[INFO] Storage strategy: Violators ONLY (mask/helmet → database)")
     print("=" * 80)
     
     # Statistics tracking
@@ -179,8 +148,6 @@ def main():
         'total_frames': 0,
         'total_persons': 0,
         'total_violations': 0,
-        'memory_persons': 0,
-        'db_persons': 0,
         'alerts': 0,
         'warnings': 0
     }
@@ -329,42 +296,16 @@ def main():
                 print(f"[Track {track_id}] M:{t['attributes']['mask']} ({sum(attribute_history[track_id]['mask'])}/{ATTRIBUTE_REQUIRED_MASK}) | "
                       f"H:{t['attributes']['helmet']} ({sum(attribute_history[track_id]['helmet'])}/{ATTRIBUTE_REQUIRED_HELMET})")
 
-        # Re-identification: attach persistent person_id to tracks
+        # Re-identification: Assign person_id ONLY to violators (mask/helmet)
         # Create mask/helmet dicts for ReID manager
         is_masked_dict = {t["track_id"]: t["attributes"]["mask"] for t in tracks}
         is_helmeted_dict = {t["track_id"]: t["attributes"]["helmet"] for t in tracks}
         
         try:
-            tracks = reid_manager.update_tracking(tracks, frame, cam["camera_id"], is_masked_dict, is_helmeted_dict)
+            tracks = reid_manager.update_tracks(frame, tracks, is_masked_dict, is_helmeted_dict)
         except Exception as e:
             if DEBUG_LEVEL >= 2:
-                print(f"[ReID] update_tracking failed: {e}")
-
-        # Check for persons without names and send alerts
-        if telegram is not None:
-            for t in tracks:
-                track_id = t["track_id"]
-                person_id = t.get('person_id', None)
-                
-                # If person is registered but has no name assigned
-                if person_id is not None:
-                    person_name = get_person_name(person_id)
-                    
-                    # Alert if person has no name and we haven't alerted recently
-                    if not person_name:
-                        now = time.time()
-                        if track_id not in unknown_person_alerted or (now - unknown_person_alerted[track_id]) >= 300:
-                            unknown_person_alerted[track_id] = now
-                            x1, y1, x2, y2 = t["bbox"]
-                            telegram.send_alert(
-                                frame, 
-                                track_id, 
-                                cam["camera_id"], 
-                                "Unnamed Person",
-                                f"Person ID {person_id} detected without name - please review and add name"
-                            )
-                            if DEBUG_LEVEL >= 2:
-                                print(f"[UNNAMED] Person ID {person_id} (Track {track_id}) needs name assignment")
+                print(f"[ReID] update_tracks failed: {e}")
 
         # Motion and behavior
         motion_info = motion.update(tracks, frame_id)
@@ -385,27 +326,26 @@ def main():
 
             x1, y1, x2, y2 = t["bbox"]
 
-            color = (255, 0, 0)
+            color = (255, 0, 0)  # Blue for normal
             if decision == "Warning":
-                color = (0, 165, 255)
+                color = (0, 165, 255)  # Orange for warning
             elif decision == "Alert":
-                color = (0, 0, 255)
+                color = (0, 0, 255)  # Red for alert
 
-            # Display stable person alias when available
+            # Display person_id for violators, track_id for normal
             person_id = t.get('person_id', None)
             is_reidentified = t.get('is_reidentified', False)
-            display_id = alias_for(person_id) if person_id is not None else f"T{track_id}"
             
-            # Get person name if available
-            person_name = get_person_name(person_id) if (person_id is not None and isinstance(person_id, int)) else None
-            if person_name:
-                display_label = f"{person_name} ({display_id}) | {decision}"
+            if person_id is not None:
+                # Violator - show person ID
+                display_id = f"P{person_id:03d}"
+                if is_reidentified:
+                    display_id += " [RE-ID]"
             else:
-                display_label = f"{display_id} | {decision}"
+                # Normal person - just show track ID
+                display_id = f"T{track_id}"
             
-            # Add re-identification indicator
-            if is_reidentified:
-                display_label += " [RE-ID]"
+            display_label = f"{display_id} | {decision}"
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
@@ -428,6 +368,8 @@ def main():
                     violation_parts.append("MASK")
                 violation_type = "+".join(violation_parts) if violation_parts else reason
                 
+                # Only send Telegram for ALERT priority (helmet, severe loitering)
+                # WARNING priority (mask, moderate loitering) tracked but no Telegram sent
                 if decision == "Alert":
                     if can_send(track_id, "Alert", cooldown=240):
                         telegram.send_alert(
@@ -437,50 +379,42 @@ def main():
                             violation_type=violation_type
                         )
                         if DEBUG_LEVEL >= 2:
-                            re_id_marker = " [RE-ID]" if is_reidentified else ""
-                            print(f"[ALERT] {display_id}{re_id_marker} | {violation_type} | Camera: {cam['camera_id']}")
-
-                elif decision == "Warning":
-                    if can_send(track_id, "Warning", cooldown=240):
-                        telegram.send_alert(
-                            frame, track_id, cam["camera_id"], decision, reason,
-                            person_id=person_id,
-                            is_reidentified=is_reidentified,
-                            violation_type=violation_type
-                        )
-                        if DEBUG_LEVEL >= 2:
-                            re_id_marker = " [RE-ID]" if is_reidentified else ""
-                            print(f"[WARNING] {display_id}{re_id_marker} | {violation_type} | Camera: {cam['camera_id']}")
+                            print(f"[ALERT] {display_id} | {violation_type} | Camera: {cam['camera_id']}")
+                
+                # WARNING alerts tracked in console/video but NOT sent to Telegram
+                elif decision == "Warning" and DEBUG_LEVEL >= 2:
+                    print(f"[WARNING] {display_id} | {violation_type} | Camera: {cam['camera_id']} (No Telegram)")
         
-        # Track person ID statistics
-        current_memory = len([t for t in tracks if isinstance(t.get('person_id'), str) and t.get('person_id').startswith('M')])
-        current_db = len([t for t in tracks if isinstance(t.get('person_id'), int)])
-        stats['memory_persons'] = max(stats['memory_persons'], current_memory)
-        stats['db_persons'] = max(stats['db_persons'], current_db)
+        # Track statistics
+        current_violators = len([t for t in tracks if t.get('person_id') is not None])
+        stats['total_violations'] = max(stats['total_violations'], current_violators)
         
         # Print summary every N frames (default 30 frames)
         if DEBUG_LEVEL >= 1 and frame_id % OUTPUT_EVERY_N_FRAMES == 0:
             avg_persons = stats['total_persons'] / stats['total_frames'] if stats['total_frames'] > 0 else 0
+            reid_stats = reid_manager.get_statistics()
             print(f"\n{'='*80}")
             print(f"[SUMMARY] Frame: {frame_id} | Runtime: {int(frame_id/1)}s")
-            print(f"  Current: {len(tracks)} tracked | {current_memory} in-memory | {current_db} in-database")
+            print(f"  Tracked: {len(tracks)} persons | Violators: {current_violators}")
             print(f"  Averages: {avg_persons:.1f} persons/frame")
             print(f"  Violations: {stats['alerts']} alerts, {stats['warnings']} warnings")
-            print(f"  Peak: {stats['memory_persons']} memory IDs, {stats['db_persons']} database IDs")
+            print(f"  Total violators seen: {reid_stats['total_violators']}, Normal: {reid_stats['total_normal']}")
             print(f"{'='*80}\n")
 
-        cv2.imshow("CCTV AI", frame)
+        cv2.imshow("CCTV AI - Violation Tracking", frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
     # Final summary
     if DEBUG_LEVEL >= 1:
+        reid_stats = reid_manager.get_statistics()
         print(f"\n{'='*80}")
         print(f"[FINAL SUMMARY]")
         print(f"  Total frames processed: {stats['total_frames']}")
         print(f"  Total persons detected: {stats['total_persons']}")
         print(f"  Violations: {stats['alerts']} alerts, {stats['warnings']} warnings")
-        print(f"  Peak tracking: {stats['memory_persons']} memory, {stats['db_persons']} database")
+        print(f"  Violators tracked: {reid_stats['total_violators']}")
+        print(f"  Normal persons ignored: {reid_stats['total_normal']}")
         print(f"{'='*80}\n")
 
     # Clean up
