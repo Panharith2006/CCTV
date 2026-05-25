@@ -38,7 +38,7 @@ class ViolationOnlyReIDManager:
     
     def __init__(self,
                  db_config=None,
-                 similarity_threshold=0.62,  # Increased for more confident matching (was 0.55)
+                 similarity_threshold=0.90,  # Increased for more confident matching (was 0.55)
                  thumbnail_dir="thumbnails",
                  camera_id="camera_1",
                  camera_location=None,

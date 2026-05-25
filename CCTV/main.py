@@ -130,7 +130,7 @@ def main():
     camera_location = f"{cam['camera_id']} - {cam.get('location', 'Unknown Location')}"
     reid_manager = ViolationOnlyReIDManager(
         db_config=MYSQL_CONFIG,
-        similarity_threshold=0.55,
+        similarity_threshold=0.62,  # Higher threshold prevents false matches (was 0.55)
         thumbnail_dir="thumbnails",
         camera_id=cam['camera_id'],
         camera_location=camera_location,
