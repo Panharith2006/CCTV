@@ -5,34 +5,15 @@ from collections import defaultdict, deque
 
 from config.layer0_cameras import CAMERAS
 from ingest.layer1_frame_ingest import FrameIngestor
-from detector.two_stage_detector import TwoStageDetector
+from detector.layer2_yolo_detector import YOLODetector
 from tracker.layer3_sort_tracker import SortTracker
-from tracker.layer4_motion_tracker import MotionAnalyzer
-from tracker.layer5_behavior import BehaviorDecider
 from tracker.layer6_telegram import TelegramNotifier
 from config.telegram_config import BOT_TOKEN, CHAT_ID
 from tracker.layer3_reid_manager import ReIDManager
 
 
 # ===================== TELEGRAM COOLDOWN =====================
-last_telegram_sent = {}  # (track_id, decision) -> timestamp
 unknown_person_alerted = {}  # track_id -> timestamp (to track unknown person alerts)
-
-
-def can_send(track_id, decision, cooldown):
-    now = time.time()
-    key = (track_id, decision)
-
-    if key not in last_telegram_sent:
-        last_telegram_sent[key] = now
-        return True
-
-    if now - last_telegram_sent[key] >= cooldown:
-        last_telegram_sent[key] = now
-        return True
-
-    return False
-
 
 # ===================== UTIL =====================
 def check_bbox_overlap(person_bbox, ppe_bbox):
@@ -48,6 +29,7 @@ def check_bbox_overlap(person_bbox, ppe_bbox):
 # ===================== MAIN =====================
 def main():
     cam = CAMERAS[0]
+    repo_root = os.path.dirname(os.path.abspath(__file__))
 
     ingestor = FrameIngestor(
         camera_id=cam["camera_id"],
@@ -55,27 +37,14 @@ def main():
         sample_rate=3
     )
 
-    # Auto-load the LATEST trained weights
-    model_path = "yolov8n.pt"
-    
-    # Find the most recent training run
-    detect_dir = os.path.join("runs", "detect")
-    if os.path.exists(detect_dir):
-        # Get all mask_finetune* directories sorted by modification time
-        runs = [d for d in os.listdir(detect_dir) if d.startswith("mask_finetune")]
-        if runs:
-            # Sort by name (mask_finetune4 > mask_finetune3, etc.)
-            runs.sort(reverse=True)
-            for run in runs:
-                candidate = os.path.join(detect_dir, run, "weights", "best.pt")
-                if os.path.exists(candidate):
-                    model_path = candidate
-                    print(f"[INFO] Loading trained model: {model_path}")
-                    break
-    
-    if model_path == "yolov8n.pt":
-        print(f"[WARNING] No trained model found, using default: {model_path}")
-        print(f"[WARNING] Default model doesn't detect masks! Run: python train_mask.py")
+    # Single YOLO model for person, mask, and helmet detection.
+    # best.pt is the only model file used by the runtime detector.
+    model_path = os.path.join(repo_root, "best.pt")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Missing YOLO model: {model_path}")
+
+    print(f"[INFO] Loading YOLO model: {model_path}")
 
     # Tunable thresholds
     # Align person filter with detector's person confidence (was filtering out detections)
@@ -84,17 +53,13 @@ def main():
     CONF_THRESHOLD_HELMET = 0.4
     HEAD_FRAC = 0.45
     IOU_THRESHOLD = 0.1
-    ATTRIBUTE_SMOOTHING = 5
-    ATTRIBUTE_REQUIRED_MASK = 1  # Only need 1 detection in smoothing window
-    ATTRIBUTE_REQUIRED_HELMET = 2
-    MOTION_THRESHOLD = 150  # Higher = less sensitive to normal movement
+    ATTRIBUTE_SMOOTHING = 30
+    ATTRIBUTE_REQUIRED_MASK = 3  # Only need 3 detections in a 30-frame window
+    ATTRIBUTE_REQUIRED_HELMET = 5
 
-    # Two-stage detector: person detector (COCO) + attribute detector (fine-tuned)
-    detector = TwoStageDetector(person_model_path="yolov8n.pt", attr_model_path=model_path, conf_person=0.5, conf_attr=0.2)
+    # Single-model detector using best.pt only.
+    detector = YOLODetector(model_path=model_path, classes=["person", "mask", "helmet"], conf_threshold=0.2)
     tracker = SortTracker()
-    motion = MotionAnalyzer(frame_gaps=[1, 5, 10, 15, 20])
-
-    behavior = BehaviorDecider(motion_threshold=MOTION_THRESHOLD, loitering_frames=10, warning_time=100, alert_time=200)
 
     # Create Telegram notifier only if credentials are set
     if BOT_TOKEN and CHAT_ID:
@@ -109,7 +74,8 @@ def main():
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
     # ReID manager: persistent person identification across leaves/returns
-    reid_manager = ReIDManager(db_config=None, similarity_threshold=0.7)
+    REID_REQUIRED_CONFIRM = 50  # frames of consistent PPE before ReID/enrollment (approx 5.0 seconds)
+    reid_manager = ReIDManager(db_config=None, similarity_threshold=0.7, required_confirm_frames=REID_REQUIRED_CONFIRM)
 
     # Alias mapping for nicer display labels
     person_alias = {}
@@ -129,8 +95,8 @@ def main():
         if pid not in person_names:
             try:
                 stats = reid_manager.db.get_person_stats(pid)
-                if stats and stats[3]:  # stats[3] is the name field
-                    person_names[pid] = stats[3]
+                if stats and stats.get('name'):
+                    person_names[pid] = stats.get('name')
                 else:
                     person_names[pid] = None
             except Exception:
@@ -201,6 +167,20 @@ def main():
         if len(persons) > 1:
             persons = nms_persons(persons, iou_thresh=0.45)
 
+        # Draw raw person detections immediately so boxes are visible before SORT confirms tracks.
+        for person_det in persons:
+            x1, y1, x2, y2 = person_det["bbox"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.putText(
+                frame,
+                f"PERSON {person_det['confidence']:.2f}",
+                (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                2
+            )
+
         # face detection for mask association
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -208,37 +188,6 @@ def main():
 
         # Tracking
         tracks = tracker.update(persons, frame)
-
-        # Re-identification: attach persistent person_id to tracks
-        try:
-            tracks = reid_manager.update_tracking(tracks, frame, cam["camera_id"])
-        except Exception as e:
-            print(f"[ReID] update_tracking failed: {e}")
-
-        # Check for persons without names and send alerts
-        if telegram is not None:
-            for t in tracks:
-                track_id = t["track_id"]
-                person_id = t.get('person_id', None)
-                
-                # If person is registered but has no name assigned
-                if person_id is not None:
-                    person_name = get_person_name(person_id)
-                    
-                    # Alert if person has no name and we haven't alerted recently
-                    if not person_name:
-                        now = time.time()
-                        if track_id not in unknown_person_alerted or (now - unknown_person_alerted[track_id]) >= 300:
-                            unknown_person_alerted[track_id] = now
-                            x1, y1, x2, y2 = t["bbox"]
-                            telegram.send_alert(
-                                frame, 
-                                track_id, 
-                                cam["camera_id"], 
-                                "Unnamed Person",
-                                f"Person ID {person_id} detected without name - please review and add name"
-                            )
-                            print(f"[TELEGRAM] Unnamed person alert sent for Person ID {person_id}, track {track_id}")
 
         # helpers
         def iou(boxA, boxB):
@@ -308,59 +257,102 @@ def main():
             # Debug output
             print(f"[DEBUG] Track {track_id}: mask={t['attributes']['mask']} (hist: {list(attribute_history[track_id]['mask'])}), helmet={t['attributes']['helmet']} (hist: {list(attribute_history[track_id]['helmet'])})")
 
-        # Motion and behavior
-        motion_info = motion.update(tracks, frame_id)
-        for m in motion_info:
-            max_motion = max(m["motion_gaps"].values()) if m["motion_gaps"] else 0
-            print(f"[DEBUG] Track {m['track_id']} motion: {max_motion:.1f} (threshold: {MOTION_THRESHOLD})")
-        behavior_info = behavior.update(tracks, motion_info)
+        # Re-identification only after PPE attributes are known.
+        try:
+            tracks = reid_manager.update_tracking(tracks, frame, cam["camera_id"], require_ppe=True)
+        except Exception as e:
+            print(f"[ReID] update_tracking failed: {e}")
 
-        # Draw and possibly send alerts
-        for t, b in zip(tracks, behavior_info):
+        # Send alerts for detected persons with PPE
+        if telegram is not None:
+            for t in tracks:
+                track_id = t["track_id"]
+                person_id = t.get('person_id', None)
+                
+                # If person has been confirmed (assigned an ID)
+                if person_id is not None:
+                    person_name = get_person_name(person_id)
+                    display_name = person_name if person_name else "Unknown"
+                    
+                    now = time.time()
+                    if track_id not in unknown_person_alerted or (now - unknown_person_alerted[track_id]) >= 300:
+                        unknown_person_alerted[track_id] = now
+                        x1, y1, x2, y2 = t["bbox"]
+                        
+                        # Extract the cropped image of the person
+                        h, w = frame.shape[:2]
+                        c_x1, c_y1 = max(0, x1), max(0, y1)
+                        c_x2, c_y2 = min(w, x2), min(h, y2)
+                        person_crop = frame[c_y1:c_y2, c_x1:c_x2]
+                        
+                        if person_crop.size > 0:
+                            attributes = t.get("attributes", {})
+                            has_mask = attributes.get("mask", False)
+                            has_helmet = attributes.get("helmet", False)
+                            
+                            if has_mask:
+                                ppe_text = "a mask"
+                            elif has_helmet:
+                                ppe_text = "a helmet"
+                            else:
+                                ppe_text = "PPE"
+                                
+                            msg_text = f"Person '{display_name}' (ID {person_id}) detected wearing {ppe_text}. Please review."
+                            
+                            # Send the full frame first
+                            telegram.send_alert(
+                                frame, 
+                                track_id, 
+                                cam["camera_id"], 
+                                "Abnormal Detection - Full Scene",
+                                msg_text
+                            )
+                            # Send the cropped image second
+                            telegram.send_alert(
+                                person_crop, 
+                                track_id, 
+                                cam["camera_id"], 
+                                "Abnormal Detection - Cropped",
+                                ""
+                            )
+                            print(f"[TELEGRAM] Alert sent for Person '{display_name}' (ID {person_id}), track {track_id}")
+
+        # Draw tracked people and send alerts for named/unnamed registration only.
+        for t in tracks:
             track_id = t["track_id"]
-            decision = b["decision"]
-            reason = b["reason"]
 
             x1, y1, x2, y2 = t["bbox"]
 
             color = (255, 0, 0)
-            if decision == "Warning":
-                color = (0, 165, 255)
-            elif decision == "Alert":
-                color = (0, 0, 255)
+            if t.get("attributes", {}).get("mask") or t.get("attributes", {}).get("helmet"):
+                color = (0, 255, 0)
 
             # Display stable person alias when available
+            # If ReID hasn't assigned a person_id yet we don't show the temporary "T" placeholder.
+            # YOLO already provides class labels (person/mask/helmet); tracking/ReID add identity overlays.
             person_id = t.get('person_id', None)
-            display_id = alias_for(person_id) if person_id is not None else f"T{track_id}"
-            
+            display_id = alias_for(person_id) if person_id is not None else None
+
             # Get person name if available
             person_name = get_person_name(person_id) if person_id is not None else None
             if person_name:
-                display_label = f"{person_name} ({display_id}) | {decision}"
+                # Show the registered name and short alias
+                display_label = f"{person_name} ({display_id})"
             else:
-                display_label = f"{display_id} | {decision}"
+                # If unknown person (no ReID yet), don't draw a 'T' placeholder; leave label empty
+                display_label = ""
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame,
-                display_label,
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
-
-            if telegram is not None:
-                if decision == "Alert":
-                    if can_send(track_id, "Alert", cooldown=240):
-                        telegram.send_alert(frame, track_id, cam["camera_id"], decision, reason)
-                        print("[TELEGRAM] ALERT sent")
-
-                elif decision == "Warning":
-                    if can_send(track_id, "Warning", cooldown=240):
-                        telegram.send_alert(frame, track_id, cam["camera_id"], decision, reason)
-                        print("[TELEGRAM] WARNING sent")
+            if display_label:
+                cv2.putText(
+                    frame,
+                    display_label,
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2
+                )
 
         cv2.imshow("CCTV AI", frame)
         if cv2.waitKey(1) & 0xFF == 27:

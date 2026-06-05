@@ -3,9 +3,7 @@ import time
 
 class FrameIngestor:
     def __init__(self, camera_id, source, sample_rate=3):
-        """
-        source: int (webcam), str (video file or RTSP)
-        """
+        
         self.camera_id = camera_id
         self.source = source
         self.sample_rate = sample_rate
@@ -16,9 +14,7 @@ class FrameIngestor:
             raise RuntimeError(f"Cannot open stream/video: {source}")
 
     def read(self):
-        """
-        Generator that yields sampled frames
-        """
+       
         while True:
             ret, frame = self.cap.read()
             if not ret:

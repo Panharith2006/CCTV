@@ -10,7 +10,7 @@ CAMERAS = [
     {
         "camera_id": "CAM_02",
         "location": "Laptop Webcam",
-        "source": 0
+        "source": "test/why.MOV"
     }
     #{
     #    "camera_id": "CAM_03",

@@ -2,12 +2,8 @@ from ultralytics import YOLO
 
 
 class YOLODetector:
-    def __init__(self, model_path="yolov8n.pt", classes=None, conf_threshold=0.6):
-        """
-        model_path: pre-trained YOLO model or checkpoint path
-        classes: list of class names to detect, e.g. ['person', 'mask', 'helmet']
-        conf_threshold: minimum confidence to keep a detection
-        """
+    def __init__(self, model_path="best.pt", classes=None, conf_threshold=0.6):
+        
         self.model = YOLO(model_path)
         self.classes = classes
         self.conf_threshold = conf_threshold
@@ -19,9 +15,7 @@ class YOLODetector:
             print(f"[YOLO] Loaded model: {model_path}; (could not read names)")
 
     def detect(self, frame):
-        """
-        Detect objects in a single frame. Returns list of detections filtered by class and confidence.
-        """
+       
         results = self.model(frame)
         detections = []
 

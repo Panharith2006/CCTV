@@ -2,18 +2,11 @@ import mysql.connector
 from mysql.connector import Error
 import numpy as np
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class ReIDDatabase:
     def __init__(self, config=None):
-        """
-        Initialize MySQL connection for ReID database
-        
-        Args:
-            config: dict with keys: host, port, user, password, database
-                   If None, tries to import from config/mysql_config.py
-        """
         if config is None:
             try:
                 from config.mysql_config import MYSQL_CONFIG
@@ -26,12 +19,13 @@ class ReIDDatabase:
         
         self.config = config
         self.conn = None
+        self.retention_days = 2
         self.connect()
         self.create_tables()
+        self.purge_old_data(retention_days=self.retention_days)
         print(f"[Database] Connected to MySQL database: {config['database']}")
     
     def connect(self):
-        """Establish MySQL connection"""
         try:
             # First, connect without database to check if it exists
             conn_temp = mysql.connector.connect(
@@ -73,9 +67,9 @@ class ReIDDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS persons (
                 person_id INT AUTO_INCREMENT PRIMARY KEY,
-                first_seen DATETIME,
-                last_seen DATETIME,
                 appearance_count INT DEFAULT 1,
+                feature_count INT DEFAULT 1,
+                centroid TEXT DEFAULT NULL,
                 status VARCHAR(20) DEFAULT 'active',
                 name VARCHAR(255) DEFAULT NULL,
                 thumbnail_path VARCHAR(512) DEFAULT NULL,
@@ -114,21 +108,64 @@ class ReIDDatabase:
         
         self.conn.commit()
         print("[Database] MySQL tables created/verified")
+        # Migration: remove old timestamp columns and ensure centroid/feature_count exist.
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'persons'
+            """, (self.config['database'],))
+            cols = {row[0] for row in cursor.fetchall()}
+            if 'first_seen' in cols:
+                cursor.execute("ALTER TABLE persons DROP COLUMN first_seen")
+            if 'last_seen' in cols:
+                cursor.execute("ALTER TABLE persons DROP COLUMN last_seen")
+            if 'centroid' not in cols:
+                cursor.execute("ALTER TABLE persons ADD COLUMN centroid TEXT DEFAULT NULL")
+            if 'feature_count' not in cols:
+                cursor.execute("ALTER TABLE persons ADD COLUMN feature_count INT DEFAULT 1")
+            self.conn.commit()
+        except Exception:
+            # Non-fatal: if migration fails (permissions, read-only), continue; DB may be upgraded manually
+            pass
+
+    def purge_old_data(self, retention_days=2):
+       
+        cursor = self.conn.cursor()
+        cutoff = datetime.now() - timedelta(days=retention_days)
+
+        cursor.execute("DELETE FROM detections WHERE timestamp < %s", (cutoff,))
+        cursor.execute("DELETE FROM features WHERE timestamp < %s", (cutoff,))
+
+        # Remove persons that no longer have any recent features/detections.
+        cursor.execute("""
+            DELETE p FROM persons p
+            LEFT JOIN features f ON f.person_id = p.person_id
+            LEFT JOIN detections d ON d.person_id = p.person_id
+            WHERE f.person_id IS NULL AND d.person_id IS NULL
+        """)
+
+        self.conn.commit()
     
     def add_person(self, feature_vector, camera_id, thumbnail_path=None, name=None, is_masked=False, is_helmeted=False):
         """Add new person to database"""
+        if not (is_masked or is_helmeted):
+            print("[Database] Skipping person storage because no mask/helmet was confirmed")
+            return None
+
         cursor = self.conn.cursor()
         now = datetime.now()
         
-        # Insert person
+        # Insert person with centroid stored on the persons row (canonical vector)
+        centroid_json = json.dumps(feature_vector.tolist())
         cursor.execute("""
-            INSERT INTO persons (first_seen, last_seen, thumbnail_path, name)
+            INSERT INTO persons (thumbnail_path, name, centroid, feature_count)
             VALUES (%s, %s, %s, %s)
-        """, (now, now, thumbnail_path, name))
+        """, (thumbnail_path, name, centroid_json, 1))
         person_id = cursor.lastrowid
-        
-        # Insert feature
-        feature_json = json.dumps(feature_vector.tolist())
+
+        # Insert feature into audit table (optional) for traceability
+        feature_json = centroid_json
         cursor.execute("""
             INSERT INTO features (person_id, feature_vector, timestamp, camera_id, is_masked, is_helmeted)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -136,48 +173,100 @@ class ReIDDatabase:
         
         self.conn.commit()
         print(f"[Database] Added new person: ID={person_id} name={name} (masked={is_masked}, helmeted={is_helmeted})")
+        self.purge_old_data(retention_days=self.retention_days)
         return person_id
     
     def get_all_features(self):
         """Get all person features for matching"""
         cursor = self.conn.cursor()
+        # Prefer using the centroid stored on the persons table when available
         cursor.execute("""
-            SELECT person_id, feature_vector
-            FROM features
-            WHERE person_id IN (SELECT person_id FROM persons WHERE status='active')
+            SELECT p.person_id, p.centroid
+            FROM persons p
+            WHERE p.status='active' AND p.centroid IS NOT NULL
         """)
         
         results = []
         for row in cursor.fetchall():
             person_id = row[0]
-            feature_vector = np.array(json.loads(row[1]))
-            results.append({
-                'person_id': person_id,
-                'features': feature_vector
-            })
+            try:
+                feature_vector = np.array(json.loads(row[1]))
+            except Exception:
+                feature_vector = None
+            if feature_vector is not None:
+                results.append({
+                    'person_id': person_id,
+                    'features': feature_vector
+                })
         
         return results
     
-    def update_person(self, person_id, feature_vector, camera_id, is_masked=False, is_helmeted=False):
-        """Update person's last seen and add new feature"""
+    def update_person(self, person_id, feature_vector, camera_id, is_masked=False, is_helmeted=False, alpha=0.15, max_feature_count=20):
+        """Update person's last seen and merge new feature into canonical centroid using EMA.
+
+        Args:
+            person_id: existing person id
+            feature_vector: numpy array
+            camera_id: camera id string
+            is_masked/is_helmeted: booleans
+            alpha: EMA alpha (0-1). If None, centroid will be updated as simple mean using counts.
+            max_feature_count: cap for count used in mean calculation
+        """
         cursor = self.conn.cursor()
         now = datetime.now()
-        
-        # Update person
+
+        if not (is_masked or is_helmeted):
+            print(f"[Database] Skipping update for person {person_id} because no mask/helmet was confirmed")
+            return
+
+        # Fetch existing centroid and feature_count
+        cursor.execute("""
+            SELECT centroid, feature_count FROM persons WHERE person_id = %s
+        """, (person_id,))
+        row = cursor.fetchone()
+        if row:
+            centroid_json, fcount = row[0], row[1] or 0
+            try:
+                centroid = np.array(json.loads(centroid_json)) if centroid_json else None
+            except Exception:
+                centroid = None
+        else:
+            centroid = None
+            fcount = 0
+
+        new_feat = np.array(feature_vector)
+        # Merge using EMA if centroid exists
+        if centroid is None:
+            merged = new_feat
+            new_count = 1
+        else:
+            if alpha is None:
+                # simple incremental mean with cap
+                n = min(fcount, max_feature_count)
+                merged = (centroid * n + new_feat) / float(n + 1)
+                new_count = min(fcount + 1, max_feature_count)
+            else:
+                merged = alpha * new_feat + (1.0 - alpha) * centroid
+                new_count = min(fcount + 1, max_feature_count)
+
+        merged_json = json.dumps(merged.tolist())
+
+        # Update persons row with new centroid and metadata
         cursor.execute("""
             UPDATE persons
-            SET last_seen = %s, appearance_count = appearance_count + 1
+            SET appearance_count = appearance_count + 1, centroid = %s, feature_count = %s
             WHERE person_id = %s
-        """, (now, person_id))
-        
-        # Add new feature
-        feature_json = json.dumps(feature_vector.tolist())
+        """, (merged_json, int(new_count), person_id))
+
+        # Insert feature into audit table (optional)
+        feature_json = json.dumps(new_feat.tolist())
         cursor.execute("""
             INSERT INTO features (person_id, feature_vector, timestamp, camera_id, is_masked, is_helmeted)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (person_id, feature_json, now, camera_id, int(is_masked), int(is_helmeted)))
-        
+
         self.conn.commit()
+        self.purge_old_data(retention_days=self.retention_days)
     
     def add_detection(self, person_id, camera_id, bbox, track_id):
         """Log a detection"""
@@ -187,6 +276,7 @@ class ReIDDatabase:
             VALUES (%s, %s, %s, %s, %s)
         """, (person_id, camera_id, json.dumps(bbox), datetime.now(), track_id))
         self.conn.commit()
+        self.purge_old_data(retention_days=self.retention_days)
 
     def get_last_detection(self, person_id, camera_id):
         """Return last detection row for a person on a camera.
@@ -216,17 +306,26 @@ class ReIDDatabase:
         """Get statistics for a person"""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT first_seen, last_seen, appearance_count, name, thumbnail_path
+            SELECT appearance_count, feature_count, name, thumbnail_path, status
             FROM persons
             WHERE person_id = %s
         """, (person_id,))
-        return cursor.fetchone()
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            'appearance_count': row[0],
+            'feature_count': row[1],
+            'name': row[2],
+            'thumbnail_path': row[3],
+            'status': row[4],
+        }
     
     def get_all_persons(self):
         """Get all persons with metadata"""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT person_id, first_seen, last_seen, appearance_count, name, thumbnail_path
+            SELECT person_id, appearance_count, feature_count, name, thumbnail_path, status
             FROM persons
             WHERE status='active'
             ORDER BY person_id

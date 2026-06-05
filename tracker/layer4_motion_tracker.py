@@ -7,10 +7,7 @@ class MotionAnalyzer:
         self.track_history = defaultdict(list)  # track_id -> list of centers
 
     def update(self, tracks, frame_id):
-        """
-        tracks: list of dicts from SORT
-        frame_id: current frame index
-        """
+       
         motion_info = []
 
         for t in tracks:

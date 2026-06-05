@@ -104,9 +104,7 @@ class KalmanBoxTracker(object):
     self.age = 0
 
   def update(self,bbox):
-    """
-    Updates the state vector with observed bbox.
-    """
+   
     self.time_since_update = 0
     self.history = []
     self.hits += 1
@@ -114,9 +112,7 @@ class KalmanBoxTracker(object):
     self.kf.update(convert_bbox_to_z(bbox))
 
   def predict(self):
-    """
-    Advances the state vector and returns the predicted bounding box estimate.
-    """
+    
     if((self.kf.x[6]+self.kf.x[2])<=0):
       self.kf.x[6] *= 0.0
     self.kf.predict()

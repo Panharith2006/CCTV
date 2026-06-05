@@ -33,7 +33,7 @@ else:
 print("\n2. YOLO Detection Test...")
 try:
     from ultralytics import YOLO
-    model = YOLO("yolov8n.pt")
+    model = YOLO("best.pt")
     print("   ✓ YOLO model loaded successfully")
     
     # Check if trained model exists
@@ -140,7 +140,7 @@ except Exception as e:
 
 # 7. Model Files Check
 print("\n7. Model Files Check...")
-required_files = ["yolov8n.pt"]
+required_files = ["best.pt"]
 for file in required_files:
     if os.path.exists(file):
         size_mb = os.path.getsize(file) / (1024 * 1024)

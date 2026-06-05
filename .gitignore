@@ -76,3 +76,15 @@ config/mysql_config.py
 # macOS
 .Spotlight-V100
 .Trashes
+
+# Video and Media files
+*.mp4
+*.mov
+*.MOV
+*.avi
+*.mkv
+*.webm
+
+# Ignore everything in test folder except tracked python files
+test/*
+!test/*.py

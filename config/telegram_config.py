@@ -1,8 +1,4 @@
-"""
-Telegram Bot Configuration
-Reads from environment variables (via .env file) or falls back to hardcoded values
-For production: set environment variables and remove hardcoded secrets
-"""
+
 import os
 from pathlib import Path
 
