@@ -1,20 +1,3 @@
-"""
-    SORT: A Simple, Online and Realtime Tracker
-    Copyright (C) 2016-2020 Alex Bewley alex@bewley.ai
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-"""
 from __future__ import print_function
 
 import os
@@ -121,9 +104,7 @@ class KalmanBoxTracker(object):
     self.age = 0
 
   def update(self,bbox):
-    """
-    Updates the state vector with observed bbox.
-    """
+   
     self.time_since_update = 0
     self.history = []
     self.hits += 1
@@ -131,9 +112,7 @@ class KalmanBoxTracker(object):
     self.kf.update(convert_bbox_to_z(bbox))
 
   def predict(self):
-    """
-    Advances the state vector and returns the predicted bounding box estimate.
-    """
+    
     if((self.kf.x[6]+self.kf.x[2])<=0):
       self.kf.x[6] *= 0.0
     self.kf.predict()

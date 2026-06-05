@@ -5,15 +5,14 @@ from detector.layer2_yolo_detector import YOLODetector
 
 def main():
     cam = CAMERAS[0]
-
     ingestor = FrameIngestor(
         camera_id=cam["camera_id"],
         source=cam["source"],
         sample_rate=3
     )
-
+         
     detector = YOLODetector(classes=["person", "mask", "helmet"])
-
+    
     for data in ingestor.read():
         frame = data["frame"]
         detections = detector.detect(frame)
@@ -35,6 +34,7 @@ def main():
 
     ingestor.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

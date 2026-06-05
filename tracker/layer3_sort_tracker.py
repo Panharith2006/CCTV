@@ -9,11 +9,7 @@ class SortTracker:
             iou_threshold=0.3
         )
 
-    def update(self, detections):
-        """
-        detections: list of dicts with bbox + confidence
-        Returns tracked objects with IDs
-        """
+    def update(self, detections, frame=None):
         if len(detections) == 0:
             dets = np.empty((0, 5))
         else:
@@ -23,9 +19,9 @@ class SortTracker:
                     d["bbox"][1],
                     d["bbox"][2],
                     d["bbox"][3],
-                    d["confidence"]
+                    d.get("confidence", 1.0)
                 ]
-                for d in detections if d["class"] == "person"
+                for d in detections if d.get("class", "person") == "person"
             ])
 
         tracks = self.tracker.update(dets)

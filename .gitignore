@@ -3,44 +3,75 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments - DO NOT COMMIT
+
 venv/
 .venv/
 env/
 ENV/
 env.bak/
 
-# Large model files
-*.pt
-yolov8n.pt
-best.pt
-
-# Database files
-*.db
-*.sqlite
-reid_features.db
-
-# Executables
-*.exe
-python-installer.exe
-
-# Temporary folders
-new/
-reid/
-New folder/
-New folder (2)/
-snapshots/
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# IDEs
-.vscode/
-.idea/
+# Jupyter Notebook
+.ipynb_checkpoints
 
-# Environment variables
-.env
+# Pytest cache
+.pytest_cache/
 
-# Thumbnails
+# Coverage
+.coverage
+htmlcov/
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+cctv_reid.db
+test_reid.db
+
+# Thumbnails and saved media
 thumbnails/
+snapshots/
+
+# YOLO / training outputs
+runs/
+weights/
+*.pt
+
+# Dataset folders (optional large data)
+mask_dataset/
+data/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Environment variables (secrets)
+.env
+config/telegram_config.py
+config/mysql_config.py
+
+# macOS
+.Spotlight-V100
+.Trashes
+
+# Video and Media files
+*.mp4
+*.mov
+*.MOV
+*.avi
+*.mkv
+*.webm
+
+# Ignore everything in test folder except tracked python files
+test/*
+!test/*.py
