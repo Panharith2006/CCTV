@@ -1,0 +1,13 @@
+ultralytics
+torch
+opencv-python
+numpy
+matplotlib
+scikit-image
+scipy
+filterpy
+requests
+torchreid
+gdown
+mysql-connector-python
+python-dotenv

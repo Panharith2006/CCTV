@@ -3,7 +3,20 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# C extensions
+*.so
 
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 venv/
 .venv/
 env/
@@ -44,7 +57,8 @@ snapshots/
 # YOLO / training outputs
 runs/
 weights/
-*.pt
+best.pt
+yolov8n.pt
 
 # Dataset folders (optional large data)
 mask_dataset/
@@ -54,24 +68,23 @@ data/
 *.tmp
 *.bak
 *~
+*.exe
+python-installer.exe
 
 # Environment variables (secrets)
 .env
-config/telegram_config.py
-config/mysql_config.py
+.env.example
+
+# Custom folders
+env/
+new/
+reid/
+New folder/
+
+# SQLite databases
+*.db
+reid_features.db
 
 # macOS
 .Spotlight-V100
 .Trashes
-
-# Video and Media files
-*.mp4
-*.mov
-*.MOV
-*.avi
-*.mkv
-*.webm
-
-# Ignore everything in test folder except tracked python files
-test/*
-!test/*.py
